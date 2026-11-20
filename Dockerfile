@@ -13,9 +13,14 @@ COPY . .
 # Limitar memoria y concurrencia para evitar que el VPS se quede sin RAM
 ENV NODE_OPTIONS="--max-old-space-size=3072"
 RUN pnpm install --frozen-lockfile --network-concurrency 4
-RUN pnpm run build
+
+# El script de build necesita un repo git para leer el hash del commit
+# (Coolify no incluye la carpeta .git en el contexto de build)
+ARG SOURCE_COMMIT=unknown
+RUN git init \
+    && git -c user.email="build@local" -c user.name="build" commit --allow-empty -m "build ${SOURCE_COMMIT}" \
+    && pnpm run build
 
 EXPOSE 3080
 
 CMD ["pnpm", "dsh", "web", "--no-open", "--host", "0.0.0.0", "--port", "3080"]
-
