@@ -1,9 +1,12 @@
 FROM node:24-slim
 
-# Dependencias necesarias para compilar módulos nativos
+# Dependencias necesarias para compilar módulos nativos + claude-mem
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 make g++ git ca-certificates \
+    python3 make g++ git ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Instalar claude-mem globalmente (persiste en la imagen Docker, no en volúmenes)
+RUN npm install -g claude-mem@16.0.2
 
 RUN corepack enable
 
