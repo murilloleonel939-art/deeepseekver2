@@ -21,7 +21,11 @@ RUN git init \
     && git -c user.email="build@local" -c user.name="build" commit --allow-empty -m "build" \
     && pnpm run build
 
+# Dominio por el que se accede (se puede sobrescribir desde Coolify > Environment Variables)
+ENV TRUSTED_HOST="w5ygnd8hd0degm9matfoazhc.158.69.213.190.sslip.io"
+ENV PUBLIC_URL="http://w5ygnd8hd0degm9matfoazhc.158.69.213.190.sslip.io/"
+
 EXPOSE 3080
 
-# La app rechaza 0.0.0.0, así que se enlaza a la IP concreta del contenedor
-CMD ["sh", "-c", "exec pnpm dsh web --no-open --host \"$(hostname -i | awk '{print $1}')\" --port 3080"]
+# La app rechaza 0.0.0.0, así que se enlaza a la IPv4 concreta del contenedor
+CMD IP=$(hostname -i | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n1); exec pnpm dsh web --no-open --host "$IP" --port 3080 --public-url "$PUBLIC_URL" --trusted-host "$TRUSTED_HOST"
