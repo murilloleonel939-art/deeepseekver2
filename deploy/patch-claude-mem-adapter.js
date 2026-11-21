@@ -88,7 +88,7 @@ const PATCHED = [
   'headers:{"content-type":"application/json"},',
   'body:JSON.stringify({contentSessionId:o.session.id,',
   'project:typeof r.project==="string"&&r.project.trim()?r.project:undefined,',
-  'cwd:o.session.header&&o.session.header.cwd,prompt:"dsh session"})});',
+  'cwd:o.session.header&&o.session.header.cwd,prompt:undefined})});',
   'wd(t,o,r)}}catch(_){}}),',
   'r.ingest&&e.on("tools/post-execute",(n,o,i)=>(gs(t,n,o,r),i())),',
   'r.summarize&&e.on("agent/turn-stopping",n=>{ys(t,n.agent,r)}),',
