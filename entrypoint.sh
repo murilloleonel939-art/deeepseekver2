@@ -38,6 +38,8 @@ ADAPTER_PATCH="$APP_DIR/deploy/patch-claude-mem-adapter.js"
 PW_SKILL_DIR="$SKILLS_DIR/playwright-skill"
 PW_BROWSERS=/root/.cache/ms-playwright
 ADAPTER_INDEX=/root/.npm-global/lib/node_modules/claude-mem/dsh/lib/index.js
+WEB_TOKEN_PATCH="$APP_DIR/deploy/patch-web-token.js"
+WEB_TOKEN_INDEX="$APP_DIR/packages/host/authentication-token/lib/index.js"
 
 export NPM_CONFIG_PREFIX=/root/.npm-global
 export PATH="/root/.bun/bin:/root/.npm-global/bin:$GRAPHIFY_VENV/bin:/root/.venvs/sec/bin:/root/.local/bin:$PATH"
@@ -181,11 +183,35 @@ ensure_adapter_patch() {
   fi
 }
 
+# `dsh web` mints its launch token with randomBytes per process, so every boot
+# invalidates the URL it handed out and a redeploy silently logs every browser
+# out. Persist that token on the volume instead, so one link keeps working.
+# /app is rebuilt on every deploy, so this re-applies each boot; the script it
+# calls is idempotent and fails soft on an unrecognised plugin shape.
+ensure_web_token_patch() {
+  if [ ! -f "$WEB_TOKEN_INDEX" ]; then
+    log "authentication-token plugin not present; skipping launch-token patch"
+    return 0
+  fi
+  if grep -q 'dsh-stable-launch-token' "$WEB_TOKEN_INDEX" 2>/dev/null; then
+    log "web launch token is stable across restarts"
+    return 0
+  fi
+  if [ "$CHECK_ONLY" = 1 ]; then
+    log "web launch token patch pending (a real boot applies it)"
+    return 0
+  fi
+  if [ -f "$WEB_TOKEN_PATCH" ] && command -v node >/dev/null 2>&1; then
+    node "$WEB_TOKEN_PATCH" "$WEB_TOKEN_INDEX" || warn "launch-token patch failed"
+  else
+    warn "launch-token patch script or node missing"
+  fi
+}
+
 # The browser-trust fence answers 403 to every authority it was not told about,
-# so a custom domain stays dead until its hostname reaches trustedHosts. And the
-# launch token is regenerated per process by design, so a long-lived cookie is
-# what keeps a browser logged in across restarts. Both live in the profile
-# patch; idempotent.
+# so a custom domain stays dead until its hostname reaches trustedHosts. The
+# browser cookie outliving a restart is what keeps a session usable while the
+# token is made stable; both live in the profile patch; idempotent.
 ensure_web_auth_config() {
   local patch="$PROFILE_DIR/cordis.patch.yml"
   [ -f "$patch" ] || return 0
@@ -327,6 +353,7 @@ ensure_claude_mem
 ensure_claude_mem_settings
 ensure_profile_adapter
 ensure_adapter_patch
+ensure_web_token_patch
 ensure_web_auth_config
 ensure_graphify
 ensure_playwright
