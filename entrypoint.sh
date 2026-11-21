@@ -34,6 +34,8 @@ PROFILE_DIR=/root/.dsh/profiles/web
 GRAPHIFY_VENV=/root/.venvs/graphify
 GRAPHIFY_BIN="$GRAPHIFY_VENV/bin/graphify"
 TOOLS_SCRIPT="$APP_DIR/deploy/install-scan-tools.sh"
+ADAPTER_PATCH="$APP_DIR/deploy/patch-claude-mem-adapter.js"
+ADAPTER_INDEX=/root/.npm-global/lib/node_modules/claude-mem/dsh/lib/index.js
 
 export NPM_CONFIG_PREFIX=/root/.npm-global
 export PATH="/root/.bun/bin:/root/.npm-global/bin:$GRAPHIFY_VENV/bin:/root/.venvs/sec/bin:/root/.local/bin:$PATH"
@@ -152,6 +154,25 @@ PATCH
   log "claude-mem adapter flags added to the profile patch"
 }
 
+# The adapter never closes a session, so nothing becomes recallable memory.
+# This appends the missing agent/disposed handler; idempotent.
+ensure_adapter_patch() {
+  if [ ! -f "$ADAPTER_INDEX" ]; then
+    log "claude-mem adapter not installed yet; skipping session-end patch"
+    return 0
+  fi
+  if grep -q 'agent/disposed' "$ADAPTER_INDEX" 2>/dev/null; then
+    log "claude-mem adapter closes sessions"
+    return 0
+  fi
+  if [ "$CHECK_ONLY" = 1 ]; then missing "claude-mem adapter lacks the session-end handler"; return 1; fi
+  if [ -f "$ADAPTER_PATCH" ] && command -v node >/dev/null 2>&1; then
+    node "$ADAPTER_PATCH" "$ADAPTER_INDEX" || warn "adapter patch failed"
+  else
+    warn "adapter patch script or node missing"
+  fi
+}
+
 # --- bun ------------------------------------------------------------------------
 # claude-mem's worker runs on Bun. It lives under /root/.bun so it survives a
 # redeploy; this rebuilds it only when the volume is fresh.
@@ -234,6 +255,7 @@ ensure_shim
 ensure_claude_mem
 ensure_claude_mem_settings
 ensure_profile_adapter
+ensure_adapter_patch
 ensure_graphify
 ensure_tools
 
@@ -244,6 +266,7 @@ if [ "$CHECK_ONLY" = 1 ]; then
   log "llm shim:    $(shim_up && echo "listening on $SHIM_PORT" || echo MISSING)"
   log "cm settings: $([ -f "$CLAUDE_MEM_SETTINGS" ] && echo present || echo MISSING)"
   log "dsh adapter: $([ -d "$PROFILE_DIR/node_modules/@claude-mem/dsh" ] && echo present || echo MISSING)"
+  log "sessions end: $(grep -q 'agent/disposed' "$ADAPTER_INDEX" 2>/dev/null && echo patched || echo UNPATCHED)"
   log "bun:         $([ -x "$BUN_BIN" ] && echo present || echo MISSING)"
   log "claude-mem:  $([ -x "$CLAUDE_MEM_BIN" ] && echo present || echo MISSING)"
   log "cm config:   $([ -d /root/.claude-mem ] && echo present || echo 'absent (run: npx claude-mem install)')"

@@ -10,6 +10,7 @@ Everything needed to make a redeploy non-destructive. Three files, one entrypoin
 | `deploy/SKILLS-MANIFEST.md` | Human-readable list of what the tarball contains. |
 | `deploy/install-scan-tools.sh` | Installs the security scanners into `/root/.local/bin` and `/root/.venvs/sec`. |
 | `deploy/llm-shim.py` | OpenAI-compatible endpoint on `127.0.0.1:37778` in front of pateway1, pinned to `claude-haiku-5-5`. |
+| `deploy/patch-claude-mem-adapter.js` | Adds the missing `agent/disposed` handler so sessions close and become recallable. |
 | `entrypoint.sh` (repo root) | Restores anything missing, then starts DSH. |
 
 The `Dockerfile` copies `deploy/` and `entrypoint.sh` into the image and uses the
@@ -41,7 +42,9 @@ exists, so a warm volume does no network work.
    `/root/.claude-mem/settings.json` so claude-mem's provider points at it.
 6. **claude-mem adapter** — installs `@claude-mem/dsh` into the `web` profile and
    ensures its flags are `injectContext: true`, `ingest: true`, `summarize: false`.
-7. **Scan tools** — gitleaks, trivy, syft, grype, cosign, opa, semgrep, guarddog.
+7. **Adapter session-end patch** — appends the `agent/disposed` handler to the
+   installed adapter, idempotently.
+8. **Scan tools** — gitleaks, trivy, syft, grype, cosign, opa, semgrep, guarddog.
 
 Failures are logged and the app still starts. A missing tool never blocks boot.
 
@@ -82,6 +85,30 @@ If the volume is lost and you want the skills without a redeploy:
 ```bash
 tar xzf /app/deploy/skills.tar.gz -C /root/.agents/skills
 ```
+
+## Why memory did not work without the patch
+
+claude-mem only treats a session as recallable once it is closed: it lists
+`status = 'completed'` sessions when injecting context. The DSH adapter hooks
+`agent/created`, `tools/post-execute` and `agent/turn-stopping`, and calls
+`/api/sessions/init` and `/api/sessions/summarize`, but never
+`/api/sessions/session-end`. Every session therefore stayed `active`, and a new
+session was told "No previous sessions found" even though observations were
+piling up.
+
+DSH exposes `agent/disposed`, which is exactly the missing signal.
+`deploy/patch-claude-mem-adapter.js` appends a handler for it that summarises
+when the flag is on, then closes the session in the worker. Verified: with the
+session closed, `/api/context/inject` returns the real summary; without it, it
+returns "This project has no memory yet".
+
+The patch is idempotent and fails soft — if a future claude-mem changes the hook
+site, it reports that and leaves the file untouched, so a version bump cannot
+break the boot. `entrypoint.sh --check` reports `sessions end: patched`.
+
+**Cost note:** with `summarize: true` one haiku summary runs per turn, measured
+at about 4,300 tokens each. Set the flag to `false` to keep capture and search
+without per-turn model calls.
 
 ## The LLM shim and which model it calls
 
