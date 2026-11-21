@@ -2,6 +2,9 @@
 
 Everything needed to make a redeploy non-destructive. Three files, one entrypoint.
 
+**For where everything lives, the repository, credentials and how to recover
+after a redeploy, read [`ESTADO-DEL-DESPLIEGUE.md`](./ESTADO-DEL-DESPLIEGUE.md).**
+
 ## Layout
 
 | File | Role |

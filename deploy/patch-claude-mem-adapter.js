@@ -80,16 +80,33 @@ const PATCHED = [
   'MT.set(sid,h);',
   '}catch(_){}}',
   // --- hooks ---
+  // Sessions register on the first pre-step, not on creation, because that is
+  // the only point where the user's actual text is available. Registering
+  // earlier would have to invent a prompt, and claude-mem stores whatever it
+  // is given: a placeholder produced summaries about the placeholder.
+  'const TX=globalThis.__cmInited=globalThis.__cmInited||new Set();',
+  'function tx(m){try{if(!m)return"";if(typeof m==="string")return m;',
+  'if(typeof m.text==="string")return m.text;',
+  'if(typeof m.content==="string")return m.content;',
+  'const c=m.content||m.blocks||m.parts;if(Array.isArray(c))return c.map(x=>',
+  'typeof x==="string"?x:(x&&typeof x.text==="string"?x.text:"")).join(" ");',
+  'return""}catch(_){return""}}',
   'e.on("agent/created",async n=>{let{agent:o}=n;',
-  'r.injectContext&&await ms(t,o,r);',
-  'try{if(o.session){',
+  'r.injectContext&&await ms(t,o,r)}),',
+  'e.on("agent/pre-step",(n,next)=>{try{',
+  'const a=n&&n.agent;if(a&&a.session&&!TX.has(a.session.id)){',
+  'const msgs=Array.isArray(n.messages)?n.messages:[];',
+  'let txt="";for(const m of msgs){const v=tx(m);',
+  'if(v&&v.trim())txt=v.trim()}',
+  'if(txt){TX.add(a.session.id);',
   `const b=${WORKER};`,
-  'await fetch(b+"/api/sessions/init",{method:"POST",',
+  'fetch(b+"/api/sessions/init",{method:"POST",',
   'headers:{"content-type":"application/json"},',
-  'body:JSON.stringify({contentSessionId:o.session.id,',
+  'body:JSON.stringify({contentSessionId:a.session.id,',
   'project:typeof r.project==="string"&&r.project.trim()?r.project:undefined,',
-  'cwd:o.session.header&&o.session.header.cwd,prompt:undefined})});',
-  'wd(t,o,r)}}catch(_){}}),',
+  'cwd:a.session.header&&a.session.header.cwd,prompt:txt.slice(0,4000)})})',
+  '.catch(()=>{})}',
+  'wd(t,a,r)}}catch(_){}return next()}),',
   'r.ingest&&e.on("tools/post-execute",(n,o,i)=>(gs(t,n,o,r),i())),',
   'r.summarize&&e.on("agent/turn-stopping",n=>{ys(t,n.agent,r)}),',
   'e.on("agent/turn-stopping",n=>{try{',
@@ -127,7 +144,7 @@ function patchFile(target) {
   fs.writeFileSync(tmp, src.replace(ORIGINAL, PATCHED))
   fs.renameSync(tmp, path.resolve(target))
   console.log('[adapter-patch] session lifecycle installed')
-  console.log('[adapter-patch]   init on agent/created')
+  console.log('[adapter-patch]   init on first pre-step, with the real prompt')
   console.log('[adapter-patch]   inactivity close (default 30 min) on agent/turn-stopping')
   console.log('[adapter-patch]   immediate close on agent/disposed')
   return 0
