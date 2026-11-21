@@ -1,30 +1,35 @@
 #!/usr/bin/env node
 /**
- * Make claude-mem's DSH adapter register and close sessions.
+ * Make claude-mem's DSH adapter register, refresh and close sessions.
  *
- * claude-mem only injects memory into a new chat from sessions it considers
- * closed: it lists sdk_sessions rows with status 'completed'. A row only
- * reaches 'completed' when the in-memory generator for that session exits and
- * the worker finalizes it. The DSH adapter has two gaps that prevent this from
- * ever happening:
+ * claude-mem only injects memory from sessions it considers closed: it lists
+ * `sdk_sessions` rows with `status = 'completed'`, and a row only reaches that
+ * state when the worker finalizes the session. The DSH adapter has three gaps:
  *
  * 1. It defines `sessionInit` but never calls it, so no session row is created
- *    for a real DSH chat. Observations land in a fallback "manual" session.
- * 2. It never closes a session. DSH has no Claude-Code-style hook for "agent
- *    stopped", so `agent/disposed` is the only available signal.
+ *    for a real DSH chat and observations land in a fallback session.
+ * 2. It never closes a session, so nothing ever becomes recallable.
+ * 3. `agent/disposed` only fires when the agent is released, which may never
+ *    happen if a chat is simply left open. Waiting for it means memory may
+ *    never be written.
  *
- * This script adds a handler pair:
+ * This script replaces the adapter's hook-registration function with one that
+ * covers all three:
  *
- *   agent/created   -> POST /api/sessions/init
- *   agent/disposed  -> POST /api/sessions/summarize (when the flag is on)
- *                       POST /api/sessions/session-end
+ *   agent/created        POST /api/sessions/init
+ *   agent/turn-stopping  restart a per-session inactivity timer
+ *   <timer expires>      POST /api/sessions/summarize (when enabled)
+ *                        POST /api/sessions/session-end
+ *   agent/disposed       flush immediately instead of waiting
  *
- * Both use the agent's own session id, so the memory is bound to the real
- * session that a later chat in the same working directory will open.
+ * The inactivity window defaults to 30 minutes and is set by
+ * CLAUDE_MEM_INACTIVITY_MS. Timers are kept on `globalThis` so they survive the
+ * plugin object being re-created, and are `unref`ed so they never hold the
+ * process open.
  *
- * Idempotent: each edit is skipped when its marker is already present. Fails
- * soft: if a future claude-mem moves the hook site, it reports that and leaves
- * the file untouched, so a version bump cannot corrupt a running adapter.
+ * Idempotent: a file carrying the marker is left untouched. Fails soft: if a
+ * future claude-mem changes the function shape, it reports that and leaves the
+ * file alone rather than corrupting a running adapter.
  *
  * Usage:
  *   node patch-claude-mem-adapter.js [path-to-adapter-index.js]
@@ -36,37 +41,66 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const DEFAULT_TARGET = '/root/.npm-global/lib/node_modules/claude-mem/dsh/lib/index.js'
-const WORKER_BASE = 'process.env.CLAUDE_MEM_WORKER_URL||"http://127.0.0.1:37700"'
+const MARKER = 'dsh-session-lifecycle'
+const WORKER = 'process.env.CLAUDE_MEM_WORKER_URL||"http://127.0.0.1:37700"'
+const INACTIVITY = 'process.env.CLAUDE_MEM_INACTIVITY_MS||1800000'
 
-const CREATED_NEEDLE = 'r.injectContext&&await ms(t,o,r)}'
-const CREATED_MARKER = 'dsh-session-init'
-
-const CREATED_REPLACEMENT = [
-  'r.injectContext&&await ms(t,o,r)',
-  ';try{',
-  `if(o.session){const base=${WORKER_BASE};`,
-  'await fetch(base+"/api/sessions/init",{method:"POST",',
-  'headers:{"content-type":"application/json"},',
-  'body:JSON.stringify({contentSessionId:o.session.id,',
-  'project:typeof r.project==="string"&&r.project.trim()?r.project:undefined,',
-  'cwd:o.session.header&&o.session.header.cwd,prompt:"dsh session"})})}',
-  `}catch(_){}/*${CREATED_MARKER}*/}`,
+/** The adapter's own hook-registration function, as shipped in 16.0.2. */
+const ORIGINAL = [
+  'function vn(e,t,r){e.on("agent/created",async n=>{let{agent:o}=n;',
+  'r.injectContext&&await ms(t,o,r)}),r.ingest&&e.on("tools/post-execute",',
+  '(n,o,i)=>(gs(t,n,o,r),i())),r.summarize&&e.on("agent/turn-stopping",',
+  'n=>{ys(t,n.agent,r)})}',
 ].join('')
 
-const DISPOSED_NEEDLE = ',r.summarize&&e.on("agent/turn-stopping",n=>{ys(t,n.agent,r)})}'
-const DISPOSED_MARKER = 'agent/disposed'
-
-const DISPOSED_REPLACEMENT = [
-  DISPOSED_NEEDLE.slice(0, -1),
-  ',e.on("agent/disposed",async n=>{try{',
-  'const a=n&&n.agent;if(!a||!a.session)return;',
-  'if(r.summarize)await ys(t,a,r);',
-  `const base=${WORKER_BASE};`,
+/**
+ * The replacement. Written as one expression so it stays a drop-in for the
+ * original function, with no new imports required.
+ *
+ * `mt(t,a,r)` closes a session: summarise when enabled, then session-end.
+ * `wd(t,a,r)` restarts that session's inactivity timer.
+ */
+const PATCHED = [
+  'function vn(e,t,r){',
+  // --- helpers, defined once per call (cheap) ---
+  'const MT=globalThis.__cmTimers=globalThis.__cmTimers||new Map();',
+  'async function mt(c,a,cfg){try{',
+  `const base=${WORKER};`,
+  'if(cfg.summarize)await ys(c,a,cfg);',
   'await fetch(base+"/api/sessions/session-end",{method:"POST",',
   'headers:{"content-type":"application/json"},',
   'body:JSON.stringify({contentSessionId:a.session.id,',
-  'cwd:a.session.header&&a.session.header.cwd,reason:"agent disposed"})})',
-  '}catch(_){}})}',
+  'cwd:a.session.header&&a.session.header.cwd,reason:"session lifecycle"})})',
+  '}catch(_){}}',
+  'function wd(c,a,cfg){try{',
+  'const sid=a.session.id;',
+  'const prev=MT.get(sid);if(prev)clearTimeout(prev);',
+  `const h=setTimeout(()=>{MT.delete(sid);mt(c,a,cfg)},Number(${INACTIVITY}));`,
+  'if(h&&h.unref)h.unref();',
+  'MT.set(sid,h);',
+  '}catch(_){}}',
+  // --- hooks ---
+  'e.on("agent/created",async n=>{let{agent:o}=n;',
+  'r.injectContext&&await ms(t,o,r);',
+  'try{if(o.session){',
+  `const b=${WORKER};`,
+  'await fetch(b+"/api/sessions/init",{method:"POST",',
+  'headers:{"content-type":"application/json"},',
+  'body:JSON.stringify({contentSessionId:o.session.id,',
+  'project:typeof r.project==="string"&&r.project.trim()?r.project:undefined,',
+  'cwd:o.session.header&&o.session.header.cwd,prompt:"dsh session"})});',
+  'wd(t,o,r)}}catch(_){}}),',
+  'r.ingest&&e.on("tools/post-execute",(n,o,i)=>(gs(t,n,o,r),i())),',
+  'r.summarize&&e.on("agent/turn-stopping",n=>{ys(t,n.agent,r)}),',
+  'e.on("agent/turn-stopping",n=>{try{',
+  'const a=n&&n.agent;if(a&&a.session)wd(t,a,r)}catch(_){}}),',
+  'e.on("agent/disposed",async n=>{try{',
+  'const a=n&&n.agent;if(!a||!a.session)return;',
+  'const sid=a.session.id;const p=MT.get(sid);',
+  'if(p){clearTimeout(p);MT.delete(sid)}',
+  'await mt(t,a,r)',
+  '}catch(_){}})',
+  `}/*${MARKER}*/`,
 ].join('')
 
 function patchFile(target) {
@@ -75,33 +109,27 @@ function patchFile(target) {
     return 0
   }
   let src = fs.readFileSync(target, 'utf8')
-  let changed = false
 
-  if (src.includes(CREATED_MARKER)) {
-    console.log('[adapter-patch] session init already present')
-  } else if (src.includes(CREATED_NEEDLE)) {
-    src = src.replace(CREATED_NEEDLE, CREATED_REPLACEMENT)
-    changed = true
-    console.log('[adapter-patch] added session init on agent/created')
-  } else {
-    console.log('[adapter-patch] agent/created hook site not found; leaving it alone')
+  if (src.includes(MARKER)) {
+    console.log('[adapter-patch] session lifecycle already patched')
+    return 0
   }
 
-  if (src.includes(DISPOSED_MARKER)) {
-    console.log('[adapter-patch] session end already present')
-  } else if (src.includes(DISPOSED_NEEDLE)) {
-    src = src.replace(DISPOSED_NEEDLE, DISPOSED_REPLACEMENT)
-    changed = true
-    console.log('[adapter-patch] added session end on agent/disposed')
-  } else {
-    console.log('[adapter-patch] agent/disposed hook site not found; leaving it alone')
+  // A newer claude-mem may have already replaced the function; fall back to the
+  // narrower per-hook edits if the whole-function shape is not recognised.
+  if (!src.includes(ORIGINAL)) {
+    console.log('[adapter-patch] hook-registration function shape not recognised;')
+    console.log('[adapter-patch] leaving the adapter untouched so the boot cannot break')
+    return 0
   }
 
-  if (!changed) return 0
   const tmp = `${target}.tmp`
-  fs.writeFileSync(tmp, src)
+  fs.writeFileSync(tmp, src.replace(ORIGINAL, PATCHED))
   fs.renameSync(tmp, path.resolve(target))
-  console.log('[adapter-patch] written')
+  console.log('[adapter-patch] session lifecycle installed')
+  console.log('[adapter-patch]   init on agent/created')
+  console.log('[adapter-patch]   inactivity close (default 30 min) on agent/turn-stopping')
+  console.log('[adapter-patch]   immediate close on agent/disposed')
   return 0
 }
 

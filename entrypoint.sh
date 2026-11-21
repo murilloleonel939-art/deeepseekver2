@@ -39,6 +39,9 @@ ADAPTER_INDEX=/root/.npm-global/lib/node_modules/claude-mem/dsh/lib/index.js
 
 export NPM_CONFIG_PREFIX=/root/.npm-global
 export PATH="/root/.bun/bin:/root/.npm-global/bin:$GRAPHIFY_VENV/bin:/root/.venvs/sec/bin:/root/.local/bin:$PATH"
+# How long a chat may sit idle before claude-mem closes its session and writes
+# the summary. 30 minutes. The adapter reads this; override it in Coolify.
+export CLAUDE_MEM_INACTIVITY_MS="${CLAUDE_MEM_INACTIVITY_MS:-1800000}"
 
 CHECK_ONLY=0
 [ "${1:-}" = "--check" ] && CHECK_ONLY=1
@@ -161,12 +164,11 @@ ensure_adapter_patch() {
     log "claude-mem adapter not installed yet; skipping session-end patch"
     return 0
   fi
-  if grep -q 'dsh-session-init' "$ADAPTER_INDEX" 2>/dev/null \
-     && grep -q 'agent/disposed' "$ADAPTER_INDEX" 2>/dev/null; then
-    log "claude-mem adapter registers and closes sessions"
+  if grep -q 'dsh-session-lifecycle' "$ADAPTER_INDEX" 2>/dev/null; then
+    log "claude-mem adapter manages sessions (inactivity close: 30m)"
     return 0
   fi
-  if [ "$CHECK_ONLY" = 1 ]; then missing "claude-mem adapter lacks the session-end handler"; return 1; fi
+  if [ "$CHECK_ONLY" = 1 ]; then missing "claude-mem adapter lacks the session-lifecycle handler"; return 1; fi
   if [ -f "$ADAPTER_PATCH" ] && command -v node >/dev/null 2>&1; then
     node "$ADAPTER_PATCH" "$ADAPTER_INDEX" || warn "adapter patch failed"
   else
@@ -267,8 +269,7 @@ if [ "$CHECK_ONLY" = 1 ]; then
   log "llm shim:    $(shim_up && echo "listening on $SHIM_PORT" || echo MISSING)"
   log "cm settings: $([ -f "$CLAUDE_MEM_SETTINGS" ] && echo present || echo MISSING)"
   log "dsh adapter: $([ -d "$PROFILE_DIR/node_modules/@claude-mem/dsh" ] && echo present || echo MISSING)"
-  log "session init: $(grep -q 'dsh-session-init' "$ADAPTER_INDEX" 2>/dev/null && echo patched || echo UNPATCHED)"
-  log "sessions end: $(grep -q 'agent/disposed' "$ADAPTER_INDEX" 2>/dev/null && echo patched || echo UNPATCHED)"
+  log "session lifecycle: $(grep -q 'dsh-session-lifecycle' "$ADAPTER_INDEX" 2>/dev/null && echo patched || echo UNPATCHED)"
   log "bun:         $([ -x "$BUN_BIN" ] && echo present || echo MISSING)"
   log "claude-mem:  $([ -x "$CLAUDE_MEM_BIN" ] && echo present || echo MISSING)"
   log "cm config:   $([ -d /root/.claude-mem ] && echo present || echo 'absent (run: npx claude-mem install)')"

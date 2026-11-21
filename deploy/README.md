@@ -42,8 +42,8 @@ exists, so a warm volume does no network work.
    `/root/.claude-mem/settings.json` so claude-mem's provider points at it.
 6. **claude-mem adapter** — installs `@claude-mem/dsh` into the `web` profile and
    ensures its flags are `injectContext: true`, `ingest: true`, `summarize: false`.
-7. **Adapter session-end patch** — appends the `agent/disposed` handler to the
-   installed adapter, idempotently.
+7. **Adapter session-lifecycle patch** — installs session init, the inactivity
+   timer and the dispose handler into the adapter, idempotently.
 8. **Scan tools** — gitleaks, trivy, syft, grype, cosign, opa, semgrep, guarddog.
 
 Failures are logged and the app still starts. A missing tool never blocks boot.
@@ -116,10 +116,26 @@ hook site, it reports that and leaves the file untouched, so a version bump
 cannot corrupt a running adapter. `entrypoint.sh --check` reports both
 `session init:` and `sessions end:`.
 
-**Timing:** `agent/disposed` fires when the agent is released, which happens on
-closing or restarting a chat, not on the first keystroke of the next one. Memory
-from a conversation therefore appears in the chat after the one that follows it,
-once that conversation has been released.
+## When memory is written
+
+Observations are captured continuously — one per tool call, as the work happens.
+That raw record is available to search immediately.
+
+A session becomes *recallable* (injected into a new chat) only once it is closed,
+because that is when the summary is generated. Two triggers close it:
+
+| Trigger | When | Notes |
+|---------|------|-------|
+| Inactivity | 30 minutes with no activity | Default. Restarts on every turn, so an active chat is never closed under you. |
+| `agent/disposed` | The agent is released | Closing or restarting the chat. Closes immediately instead of waiting. |
+
+The inactivity window is `CLAUDE_MEM_INACTIVITY_MS` (default `1800000`, i.e. 30
+minutes). `entrypoint.sh` exports it, so it can be overridden from Coolify
+without touching the image.
+
+Practical consequence: **you do not have to close a chat** for its memory to be
+written. Leaving it idle for 30 minutes is enough. Closing it makes that happen
+sooner.
 
 **Cost note:** with `summarize: true` one haiku summary runs per turn, measured
 at about 4,300 tokens each. Set the flag to `false` to keep capture and search
