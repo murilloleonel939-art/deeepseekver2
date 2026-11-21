@@ -33,6 +33,9 @@ CLAUDE_MEM_SETTINGS=/root/.claude-mem/settings.json
 PROFILE_DIR=/root/.dsh/profiles/web
 GRAPHIFY_VENV=/root/.venvs/graphify
 GRAPHIFY_BIN="$GRAPHIFY_VENV/bin/graphify"
+RULES_SOURCE="$APP_DIR/deploy/AGENTS.md"
+RULES_TARGET="${DSH_HOME:-/root/.dsh}/AGENTS.md"
+RULES_MARKER="$(dirname "$RULES_TARGET")/.shipped-agents-md.sha256"
 TOOLS_SCRIPT="$APP_DIR/deploy/install-scan-tools.sh"
 ADAPTER_PATCH="$APP_DIR/deploy/patch-claude-mem-adapter.js"
 PW_SKILL_DIR="$SKILLS_DIR/playwright-skill"
@@ -299,6 +302,31 @@ ensure_graphify() {
   log "graphify installed"
 }
 
+# --- user-global agent rules --------------------------------------------------
+# deploy/AGENTS.md is the source of truth for ~/.dsh/AGENTS.md. The marker keeps
+# the sha256 of the last shipped copy, so a changed rule set reaches a warm
+# volume while edits made inside a running container survive redeploys of the
+# same image; the replaced file is kept as AGENTS.md.bak.
+ensure_global_rules() {
+  if [ ! -f "$RULES_SOURCE" ]; then
+    missing "global rules absent at $RULES_SOURCE (image built without deploy/AGENTS.md)"
+    return 1
+  fi
+  local want have
+  want=$(sha256sum "$RULES_SOURCE" | cut -d' ' -f1)
+  have=$(cat "$RULES_MARKER" 2>/dev/null || true)
+  if [ "$want" = "$have" ] && [ -f "$RULES_TARGET" ]; then
+    log "global rules present"
+    return 0
+  fi
+  if [ "$CHECK_ONLY" = 1 ]; then missing "global rules MISSING or OUTDATED at $RULES_TARGET"; return 1; fi
+  mkdir -p "$(dirname "$RULES_TARGET")"
+  [ -f "$RULES_TARGET" ] && cp -p "$RULES_TARGET" "$RULES_TARGET.bak"
+  cp "$RULES_SOURCE" "$RULES_TARGET"
+  printf '%s\n' "$want" > "$RULES_MARKER"
+  log "global rules restored to $RULES_TARGET"
+}
+
 # --- playwright -----------------------------------------------------------------
 # The skill ships as source; its npm dependency and the Chromium build are
 # restored here. Chromium also needs system libraries that node:24-slim lacks,
@@ -355,6 +383,7 @@ ensure_profile_adapter
 ensure_adapter_patch
 ensure_web_token_patch
 ensure_web_auth_config
+ensure_global_rules
 ensure_graphify
 ensure_playwright
 ensure_tools
