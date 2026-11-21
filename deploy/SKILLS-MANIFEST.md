@@ -51,25 +51,26 @@ Contenido de `vendor/skills.tar.gz`, restaurado por `entrypoint.sh` cuando
 | 44 | `performing-sca-dependency-scanning-with-snyk` |
 | 45 | `performing-threat-modeling-with-owasp-threat-dragon` |
 | 46 | `pick-ui-library` |
-| 47 | `pricing` |
-| 48 | `product-marketing` |
-| 49 | `prototype` |
-| 50 | `remove-animations` |
-| 51 | `review-animations` |
-| 52 | `scanning-iac-and-images-with-trivy` |
-| 53 | `schema` |
-| 54 | `securing-github-actions-workflows` |
-| 55 | `security-audit` |
-| 56 | `security-review` |
-| 57 | `seo-audit` |
-| 58 | `site-architecture` |
-| 59 | `slides` |
-| 60 | `social` |
-| 61 | `ui-styling` |
-| 62 | `ui-ux-pro-max` |
-| 63 | `unslop-ui` |
-| 64 | `verifying-build-provenance-with-slsa-sigstore` |
-| 65 | `video` |
-| 66 | `write-swift` |
+| 47 | `playwright-skill` |
+| 48 | `pricing` |
+| 49 | `product-marketing` |
+| 50 | `prototype` |
+| 51 | `remove-animations` |
+| 52 | `review-animations` |
+| 53 | `scanning-iac-and-images-with-trivy` |
+| 54 | `schema` |
+| 55 | `securing-github-actions-workflows` |
+| 56 | `security-audit` |
+| 57 | `security-review` |
+| 58 | `seo-audit` |
+| 59 | `site-architecture` |
+| 60 | `slides` |
+| 61 | `social` |
+| 62 | `ui-styling` |
+| 63 | `ui-ux-pro-max` |
+| 64 | `unslop-ui` |
+| 65 | `verifying-build-provenance-with-slsa-sigstore` |
+| 66 | `video` |
+| 67 | `write-swift` |
 
-Total: 66 skills.
+Total: 67 skills.

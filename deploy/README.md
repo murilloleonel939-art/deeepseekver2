@@ -44,7 +44,9 @@ exists, so a warm volume does no network work.
    ensures its flags are `injectContext: true`, `ingest: true`, `summarize: false`.
 7. **Adapter session-lifecycle patch** — installs session init, the inactivity
    timer and the dispose handler into the adapter, idempotently.
-8. **Scan tools** — gitleaks, trivy, syft, grype, cosign, opa, semgrep, guarddog.
+8. **Playwright** — `npm install` in `playwright-skill/` and Chromium plus its
+   system libraries, so browser testing works after a fresh volume.
+9. **Scan tools** — gitleaks, trivy, syft, grype, cosign, opa, semgrep, guarddog.
 
 Failures are logged and the app still starts. A missing tool never blocks boot.
 
@@ -140,6 +142,28 @@ sooner.
 **Cost note:** with `summarize: true` one haiku summary runs per turn, measured
 at about 4,300 tokens each. Set the flag to `false` to keep capture and search
 without per-turn model calls.
+
+## Playwright runs headless, as root
+
+The container has no display, so `playwright-skill` is configured for headless
+use. `entrypoint.sh` exports `PW_HEADLESS=true`, and the skill's `launchBrowser()`
+helper reads it and adds `--no-sandbox` because the process runs as root.
+
+If you write Playwright code by hand rather than through the helper, both flags
+are required or Chromium refuses to start:
+
+```js
+const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+```
+
+The skills bundle excludes `node_modules` — it is 19 MB and reinstallable — so
+`deploy/skills.tar.gz` stays at 4.5 MB. `ensure_playwright` restores the npm
+dependency and Chromium, including the apt libraries `node:24-slim` lacks
+(`libnss3`, `libgbm`, `libatk`, and the rest), which is roughly 150 MB on a cold
+volume and takes a minute or two.
+
+Chromium is cached in `/root/.cache/ms-playwright`, so it survives a redeploy
+with a warm volume.
 
 ## The LLM shim and which model it calls
 

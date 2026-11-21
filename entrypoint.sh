@@ -35,6 +35,8 @@ GRAPHIFY_VENV=/root/.venvs/graphify
 GRAPHIFY_BIN="$GRAPHIFY_VENV/bin/graphify"
 TOOLS_SCRIPT="$APP_DIR/deploy/install-scan-tools.sh"
 ADAPTER_PATCH="$APP_DIR/deploy/patch-claude-mem-adapter.js"
+PW_SKILL_DIR="$SKILLS_DIR/playwright-skill"
+PW_BROWSERS=/root/.cache/ms-playwright
 ADAPTER_INDEX=/root/.npm-global/lib/node_modules/claude-mem/dsh/lib/index.js
 
 export NPM_CONFIG_PREFIX=/root/.npm-global
@@ -42,6 +44,9 @@ export PATH="/root/.bun/bin:/root/.npm-global/bin:$GRAPHIFY_VENV/bin:/root/.venv
 # How long a chat may sit idle before claude-mem closes its session and writes
 # the summary. 30 minutes. The adapter reads this; override it in Coolify.
 export CLAUDE_MEM_INACTIVITY_MS="${CLAUDE_MEM_INACTIVITY_MS:-1800000}"
+# Playwright runs in a container: no display, and root needs --no-sandbox.
+# lib/helpers.js reads PW_HEADLESS and adds --no-sandbox automatically.
+export PW_HEADLESS=true
 
 CHECK_ONLY=0
 [ "${1:-}" = "--check" ] && CHECK_ONLY=1
@@ -63,7 +68,7 @@ ensure_skills() {
   want=$(sha256sum "$SKILLS_BUNDLE" | cut -d' ' -f1)
   have_now=$(cat "$SKILLS_MARKER" 2>/dev/null || true)
   if [ "$want" = "$have_now" ]; then
-    log "skills present ($(find "$SKILLS_DIR" -name SKILL.md 2>/dev/null | wc -l) skills, bundle ${want:0:12})"
+    log "skills present ($(find "$SKILLS_DIR" -maxdepth 2 -name SKILL.md 2>/dev/null | wc -l) skills, bundle ${want:0:12})"
     return 0
   fi
   if [ "$CHECK_ONLY" = 1 ]; then
@@ -74,7 +79,7 @@ ensure_skills() {
   mkdir -p "$SKILLS_DIR"
   if tar xzf "$SKILLS_BUNDLE" -C "$SKILLS_DIR"; then
     printf '%s' "$want" > "$SKILLS_MARKER"
-    log "skills restored ($(find "$SKILLS_DIR" -name SKILL.md | wc -l) skills)"
+    log "skills restored ($(find "$SKILLS_DIR" -maxdepth 2 -name SKILL.md | wc -l) skills)"
   else
     warn "skills restore failed"
     return 1
@@ -236,6 +241,37 @@ ensure_graphify() {
   log "graphify installed"
 }
 
+# --- playwright -----------------------------------------------------------------
+# The skill ships as source; its npm dependency and the Chromium build are
+# restored here. Chromium also needs system libraries that node:24-slim lacks,
+# so install-deps runs with apt. Roughly 150 MB on a cold volume.
+ensure_playwright() {
+  if [ ! -f "$PW_SKILL_DIR/SKILL.md" ]; then
+    log "playwright skill not present; skipping its setup"
+    return 0
+  fi
+
+  if [ -d "$PW_SKILL_DIR/node_modules/playwright" ]; then
+    log "playwright dependency present"
+  else
+    if [ "$CHECK_ONLY" = 1 ]; then missing "playwright npm dependency MISSING"; return 1; fi
+    log "installing playwright npm dependency ..."
+    ( cd "$PW_SKILL_DIR" && npm install --silent >/dev/null 2>&1 ) \
+      || warn "playwright npm install failed (network?)"
+  fi
+
+  if ls -d "$PW_BROWSERS"/chromium* >/dev/null 2>&1; then
+    log "chromium present"
+  else
+    if [ "$CHECK_ONLY" = 1 ]; then missing "chromium MISSING in $PW_BROWSERS"; return 1; fi
+    log "installing chromium and its system libraries ..."
+    ( cd "$PW_SKILL_DIR" && npx playwright install-deps chromium >/dev/null 2>&1 ) \
+      || warn "chromium system libraries may be incomplete"
+    ( cd "$PW_SKILL_DIR" && npx playwright install chromium >/dev/null 2>&1 ) \
+      || warn "chromium install failed (network?)"
+  fi
+}
+
 # --- security scanning tools --------------------------------------------------
 ensure_tools() {
   if [ ! -x "$TOOLS_SCRIPT" ]; then
@@ -260,12 +296,15 @@ ensure_claude_mem_settings
 ensure_profile_adapter
 ensure_adapter_patch
 ensure_graphify
+ensure_playwright
 ensure_tools
 
 if [ "$CHECK_ONLY" = 1 ]; then
   echo '---'
-  log "skills:      $(find "$SKILLS_DIR" -name SKILL.md 2>/dev/null | wc -l) installed"
+  log "skills:      $(find "$SKILLS_DIR" -maxdepth 2 -name SKILL.md 2>/dev/null | wc -l) installed"
   log "graphify:    $(command -v graphify || echo MISSING)"
+  log "playwright:  $([ -d "$PW_SKILL_DIR/node_modules/playwright" ] && echo dependency-ok || echo MISSING)"
+  log "chromium:    $(ls -d "$PW_BROWSERS"/chromium* >/dev/null 2>&1 && echo present || echo MISSING)"
   log "llm shim:    $(shim_up && echo "listening on $SHIM_PORT" || echo MISSING)"
   log "cm settings: $([ -f "$CLAUDE_MEM_SETTINGS" ] && echo present || echo MISSING)"
   log "dsh adapter: $([ -d "$PROFILE_DIR/node_modules/@claude-mem/dsh" ] && echo present || echo MISSING)"
