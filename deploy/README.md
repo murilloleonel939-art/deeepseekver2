@@ -9,7 +9,7 @@ Everything needed to make a redeploy non-destructive. Three files, one entrypoin
 | `deploy/skills.tar.gz` | The 66 agent skills. Source of truth for `/root/.agents/skills`. |
 | `deploy/SKILLS-MANIFEST.md` | Human-readable list of what the tarball contains. |
 | `deploy/install-scan-tools.sh` | Installs the security scanners into `/root/.local/bin` and `/root/.venvs/sec`. |
-| `deploy/llm-shim.py` | OpenAI-compatible endpoint on `127.0.0.1:37778` in front of pateway1, pinned to `claude-haiku-5-5`. |
+| `deploy/llm-shim.py` | OpenAI-compatible endpoint on `127.0.0.1:37778` in front of pateway2gpt, pinned to `gpt-6-luna`. |
 | `deploy/patch-claude-mem-adapter.js` | Adds the missing session registration and close handlers so memory becomes recallable. |
 | `entrypoint.sh` (repo root) | Restores anything missing, then starts DSH. |
 
@@ -131,7 +131,7 @@ claude-mem's `host` provider expects an OpenAI-compatible server on localhost an
 never starts one. `deploy/llm-shim.py` supplies `/v1/chat/completions` and
 `/v1/models`, and translates to and from pateway1's Anthropic-messages dialect.
 
-**The model is pinned to `claude-haiku-5-5`.** The shim overwrites whatever model
+**The model is pinned to `gpt-6-luna` (provider `pateway2gpt`, key `PATEWAY2GPT_API_KEY`).** The shim overwrites whatever model
 the caller requests, so no other model — opus, sonnet, fable — can be reached
 through it. The choice lives in one place, `SHIM_MODEL` in `entrypoint.sh`.
 
