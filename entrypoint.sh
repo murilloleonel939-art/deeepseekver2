@@ -403,10 +403,19 @@ ensure_tools
 
 if [ "$CHECK_ONLY" = 1 ]; then
   echo '---'
+  # Report the same facts the restore steps act on: a browser directory that
+  # exists but does not launch is broken, not present.
+  rules_state="MISSING or outdated"
+  if [ -f "$RULES_TARGET" ] \
+    && [ "$(sha256sum "$RULES_SOURCE" 2>/dev/null | cut -d' ' -f1)" = "$(cat "$RULES_MARKER" 2>/dev/null)" ]; then
+    rules_state="present"
+  fi
+  pw_state="BROKEN or MISSING"
+  pw_usable && pw_state="usable, chromium launches"
   log "skills:      $(find "$SKILLS_DIR" -maxdepth 2 -name SKILL.md 2>/dev/null | wc -l) installed"
   log "graphify:    $(command -v graphify || echo MISSING)"
-  log "playwright:  $([ -d "$PW_SKILL_DIR/node_modules/playwright" ] && echo dependency-ok || echo MISSING)"
-  log "chromium:    $(ls -d "$PW_BROWSERS"/chromium* >/dev/null 2>&1 && echo present || echo MISSING)"
+  log "global rules: $rules_state"
+  log "playwright:  $pw_state"
   log "llm shim:    $(shim_up && echo "listening on $SHIM_PORT" || echo MISSING)"
   log "cm settings: $([ -f "$CLAUDE_MEM_SETTINGS" ] && echo present || echo MISSING)"
   log "dsh adapter: $([ -d "$PROFILE_DIR/node_modules/@claude-mem/dsh" ] && echo present || echo MISSING)"
