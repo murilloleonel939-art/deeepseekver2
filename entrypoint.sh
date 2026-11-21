@@ -161,8 +161,9 @@ ensure_adapter_patch() {
     log "claude-mem adapter not installed yet; skipping session-end patch"
     return 0
   fi
-  if grep -q 'agent/disposed' "$ADAPTER_INDEX" 2>/dev/null; then
-    log "claude-mem adapter closes sessions"
+  if grep -q 'dsh-session-init' "$ADAPTER_INDEX" 2>/dev/null \
+     && grep -q 'agent/disposed' "$ADAPTER_INDEX" 2>/dev/null; then
+    log "claude-mem adapter registers and closes sessions"
     return 0
   fi
   if [ "$CHECK_ONLY" = 1 ]; then missing "claude-mem adapter lacks the session-end handler"; return 1; fi
@@ -266,6 +267,7 @@ if [ "$CHECK_ONLY" = 1 ]; then
   log "llm shim:    $(shim_up && echo "listening on $SHIM_PORT" || echo MISSING)"
   log "cm settings: $([ -f "$CLAUDE_MEM_SETTINGS" ] && echo present || echo MISSING)"
   log "dsh adapter: $([ -d "$PROFILE_DIR/node_modules/@claude-mem/dsh" ] && echo present || echo MISSING)"
+  log "session init: $(grep -q 'dsh-session-init' "$ADAPTER_INDEX" 2>/dev/null && echo patched || echo UNPATCHED)"
   log "sessions end: $(grep -q 'agent/disposed' "$ADAPTER_INDEX" 2>/dev/null && echo patched || echo UNPATCHED)"
   log "bun:         $([ -x "$BUN_BIN" ] && echo present || echo MISSING)"
   log "claude-mem:  $([ -x "$CLAUDE_MEM_BIN" ] && echo present || echo MISSING)"
