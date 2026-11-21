@@ -328,34 +328,47 @@ ensure_global_rules() {
 }
 
 # --- playwright -----------------------------------------------------------------
-# The skill ships as source; its npm dependency and the Chromium build are
-# restored here. Chromium also needs system libraries that node:24-slim lacks,
-# so install-deps runs with apt. Roughly 150 MB on a cold volume.
+# The skill ships as source; its npm dependency, the Chromium build and the
+# system libraries node:24-slim lacks are restored here. A presence check on the
+# browser directory is not enough: a half-installed or drifted volume keeps the
+# files while Chromium fails to start, so every boot launches the browser once
+# and repairs whatever that launch proves missing. Roughly 150 MB on a cold volume.
+pw_usable() {
+  [ -f "$PW_SKILL_DIR/node_modules/playwright/package.json" ] || return 1
+  ls -d "$PW_BROWSERS"/chromium* >/dev/null 2>&1 || return 1
+  ( cd "$PW_SKILL_DIR" && timeout 120 node --input-type=module -e "
+    const { chromium } = await import('playwright')
+    const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] })
+    await browser.close()
+  " ) >/dev/null 2>&1
+}
+
 ensure_playwright() {
   if [ ! -f "$PW_SKILL_DIR/SKILL.md" ]; then
     log "playwright skill not present; skipping its setup"
     return 0
   fi
 
-  if [ -d "$PW_SKILL_DIR/node_modules/playwright" ]; then
-    log "playwright dependency present"
-  else
-    if [ "$CHECK_ONLY" = 1 ]; then missing "playwright npm dependency MISSING"; return 1; fi
-    log "installing playwright npm dependency ..."
-    ( cd "$PW_SKILL_DIR" && npm install --silent >/dev/null 2>&1 ) \
-      || warn "playwright npm install failed (network?)"
+  if pw_usable; then
+    log "playwright present, chromium launches"
+    return 0
   fi
+  if [ "$CHECK_ONLY" = 1 ]; then missing "playwright INCOMPLETE or chromium fails to launch"; return 1; fi
 
-  if ls -d "$PW_BROWSERS"/chromium* >/dev/null 2>&1; then
-    log "chromium present"
-  else
-    if [ "$CHECK_ONLY" = 1 ]; then missing "chromium MISSING in $PW_BROWSERS"; return 1; fi
-    log "installing chromium and its system libraries ..."
-    ( cd "$PW_SKILL_DIR" && npx playwright install-deps chromium >/dev/null 2>&1 ) \
-      || warn "chromium system libraries may be incomplete"
-    ( cd "$PW_SKILL_DIR" && npx playwright install chromium >/dev/null 2>&1 ) \
-      || warn "chromium install failed (network?)"
+  log "playwright missing or not launching; repairing ..."
+  ( cd "$PW_SKILL_DIR" && npm install --silent >/dev/null 2>&1 ) \
+    || warn "playwright npm install failed (network?)"
+  ( cd "$PW_SKILL_DIR" && npx playwright install-deps chromium >/dev/null 2>&1 ) \
+    || warn "chromium system libraries may be incomplete (apt or network?)"
+  ( cd "$PW_SKILL_DIR" && npx playwright install --force chromium >/dev/null 2>&1 ) \
+    || warn "chromium install failed (network?)"
+
+  if pw_usable; then
+    log "playwright repaired, chromium launches"
+    return 0
   fi
+  warn "playwright still not launching after repair"
+  return 1
 }
 
 # --- security scanning tools --------------------------------------------------
