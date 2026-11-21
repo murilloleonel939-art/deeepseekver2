@@ -9,6 +9,7 @@ Everything needed to make a redeploy non-destructive. Three files, one entrypoin
 | `deploy/skills.tar.gz` | The 66 agent skills. Source of truth for `/root/.agents/skills`. |
 | `deploy/SKILLS-MANIFEST.md` | Human-readable list of what the tarball contains. |
 | `deploy/install-scan-tools.sh` | Installs the security scanners into `/root/.local/bin` and `/root/.venvs/sec`. |
+| `deploy/llm-shim.py` | OpenAI-compatible endpoint on `127.0.0.1:37778` in front of pateway1, pinned to `claude-haiku-5-5`. |
 | `entrypoint.sh` (repo root) | Restores anything missing, then starts DSH. |
 
 The `Dockerfile` copies `deploy/` and `entrypoint.sh` into the image and uses the
@@ -36,7 +37,11 @@ exists, so a warm volume does no network work.
 2. **Bun** — rebuild `/root/.bun` if missing (claude-mem's worker runs on it).
 3. **claude-mem** — `npm install -g claude-mem@16.0.2` into `/root/.npm-global`.
 4. **graphify** — rebuild `/root/.venvs/graphify` and its skill symlink.
-5. **Scan tools** — gitleaks, trivy, syft, grype, cosign, opa, semgrep, guarddog.
+5. **LLM shim** — starts `deploy/llm-shim.py` on port 37778 and writes
+   `/root/.claude-mem/settings.json` so claude-mem's provider points at it.
+6. **claude-mem adapter** — installs `@claude-mem/dsh` into the `web` profile and
+   ensures its flags are `injectContext: true`, `ingest: true`, `summarize: false`.
+7. **Scan tools** — gitleaks, trivy, syft, grype, cosign, opa, semgrep, guarddog.
 
 Failures are logged and the app still starts. A missing tool never blocks boot.
 
@@ -77,6 +82,26 @@ If the volume is lost and you want the skills without a redeploy:
 ```bash
 tar xzf /app/deploy/skills.tar.gz -C /root/.agents/skills
 ```
+
+## The LLM shim and which model it calls
+
+claude-mem's `host` provider expects an OpenAI-compatible server on localhost and
+never starts one. `deploy/llm-shim.py` supplies `/v1/chat/completions` and
+`/v1/models`, and translates to and from pateway1's Anthropic-messages dialect.
+
+**The model is pinned to `claude-haiku-5-5`.** The shim overwrites whatever model
+the caller requests, so no other model — opus, sonnet, fable — can be reached
+through it. The choice lives in one place, `SHIM_MODEL` in `entrypoint.sh`.
+
+The pateway1 key is read per request from `/root/.dsh/.credentials.yaml`
+(`PATEWAY1_API_KEY`). It is never copied into a file the shim owns and never
+logged.
+
+With `summarize: false`, this model is not called at all: observations are stored
+raw and embedded locally. The shim exists so the provider is configured and
+healthy, ready if summarisation is ever turned on. Every request the shim serves
+is logged, so `grep forwarding /root/.llm-shim/shim.log` is the audit trail for
+any model usage.
 
 ## claude-mem provider
 

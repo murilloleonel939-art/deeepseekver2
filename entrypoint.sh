@@ -23,6 +23,14 @@ SKILLS_MARKER="$SKILLS_DIR/.bundle-sha256"
 CLAUDE_MEM_VERSION=16.0.2
 CLAUDE_MEM_BIN=/root/.npm-global/bin/claude-mem
 BUN_BIN=/root/.bun/bin/bun
+SHIM_PORT=37778
+SHIM_SCRIPT="$APP_DIR/deploy/llm-shim.py"
+SHIM_UPSTREAM_API=anthropic
+SHIM_UPSTREAM_BASE_URL=https://api.pateway.ai/v1
+SHIM_MODEL=claude-haiku-5-5
+SHIM_UPSTREAM_KEY_ENV=PATEWAY1_API_KEY
+CLAUDE_MEM_SETTINGS=/root/.claude-mem/settings.json
+PROFILE_DIR=/root/.dsh/profiles/web
 GRAPHIFY_VENV=/root/.venvs/graphify
 GRAPHIFY_BIN="$GRAPHIFY_VENV/bin/graphify"
 TOOLS_SCRIPT="$APP_DIR/deploy/install-scan-tools.sh"
@@ -66,6 +74,82 @@ ensure_skills() {
     warn "skills restore failed"
     return 1
   fi
+}
+
+# --- llm shim -------------------------------------------------------------------
+# claude-mem's host provider needs an OpenAI-compatible server on localhost and
+# never starts one. This shim provides it and forwards to OpenRouter.
+shim_up() {
+  curl -fsS --max-time 2 "http://127.0.0.1:${SHIM_PORT}/health" >/dev/null 2>&1
+}
+
+ensure_shim() {
+  if shim_up; then log "llm shim present (port $SHIM_PORT)"; return 0; fi
+  if [ "$CHECK_ONLY" = 1 ]; then missing "llm shim not listening on $SHIM_PORT"; return 1; fi
+  if [ ! -f "$SHIM_SCRIPT" ]; then warn "shim script absent at $SHIM_SCRIPT"; return 1; fi
+  log "starting llm shim on $SHIM_PORT ..."
+  mkdir -p /root/.llm-shim
+  SHIM_PORT="$SHIM_PORT" SHIM_UPSTREAM_API="$SHIM_UPSTREAM_API" \
+    SHIM_UPSTREAM_BASE_URL="$SHIM_UPSTREAM_BASE_URL" SHIM_MODEL="$SHIM_MODEL" \
+    SHIM_UPSTREAM_KEY_ENV="$SHIM_UPSTREAM_KEY_ENV" \
+    setsid nohup python3 "$SHIM_SCRIPT" >>/root/.llm-shim/shim.out 2>&1 &
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    shim_up && { log "llm shim ready"; return 0; }
+    sleep 1
+  done
+  warn "llm shim did not become ready"
+  return 1
+}
+
+# Point claude-mem at the shim so its provider is not left on the Claude CLI.
+ensure_claude_mem_settings() {
+  mkdir -p /root/.claude-mem
+  if [ -f "$CLAUDE_MEM_SETTINGS" ] && grep -q 'CLAUDE_MEM_OPENROUTER_BASE_URL' "$CLAUDE_MEM_SETTINGS" 2>/dev/null; then
+    log "claude-mem settings present"
+    return 0
+  fi
+  if [ "$CHECK_ONLY" = 1 ]; then missing "claude-mem settings not configured for the shim"; return 1; fi
+  cat > "$CLAUDE_MEM_SETTINGS" <<SETTINGS
+{
+  "CLAUDE_MEM_RUNTIME": "worker",
+  "CLAUDE_MEM_PROVIDER": "openrouter",
+  "CLAUDE_MEM_OPENROUTER_BASE_URL": "http://127.0.0.1:${SHIM_PORT}/v1",
+  "CLAUDE_MEM_OPENROUTER_MODEL": "${SHIM_MODEL}",
+  "CLAUDE_MEM_OPENROUTER_API_KEY": "shim-managed",
+  "CLAUDE_MEM_MODEL": "${SHIM_MODEL}"
+}
+SETTINGS
+  log "claude-mem settings written"
+}
+
+# The DSH profile must carry the adapter and its flags; a fresh volume has neither.
+ensure_profile_adapter() {
+  local pkg
+  pkg=$(npm root -g 2>/dev/null)/claude-mem/dsh
+  if [ -d "$PROFILE_DIR/node_modules/@claude-mem/dsh" ]; then
+    log "claude-mem DSH adapter present"
+  elif [ "$CHECK_ONLY" = 1 ]; then
+    missing "claude-mem DSH adapter not installed in the profile"
+    return 1
+  elif [ -d "$pkg" ]; then
+    log "installing claude-mem DSH adapter into the profile ..."
+    ( cd "$APP_DIR" && pnpm dsh plugin --profile web add "$pkg" >/dev/null 2>&1 ) \
+      || warn "adapter install failed"
+  fi
+  local patch="$PROFILE_DIR/cordis.patch.yml"
+  [ -f "$patch" ] || return 0
+  if grep -q '@claude-mem/dsh' "$patch" 2>/dev/null; then return 0; fi
+  if [ "$CHECK_ONLY" = 1 ]; then missing "claude-mem adapter flags absent from the profile patch"; return 1; fi
+  cat >> "$patch" <<'PATCH'
+- id: claude-mem
+  name: "@claude-mem/dsh"
+  config:
+    injectContext: true
+    ingest: true
+    summarize: false
+    startLocalWorker: true
+PATCH
+  log "claude-mem adapter flags added to the profile patch"
 }
 
 # --- bun ------------------------------------------------------------------------
@@ -146,7 +230,10 @@ ensure_tools() {
 # --- run ----------------------------------------------------------------------
 ensure_skills
 ensure_bun
+ensure_shim
 ensure_claude_mem
+ensure_claude_mem_settings
+ensure_profile_adapter
 ensure_graphify
 ensure_tools
 
@@ -154,6 +241,9 @@ if [ "$CHECK_ONLY" = 1 ]; then
   echo '---'
   log "skills:      $(find "$SKILLS_DIR" -name SKILL.md 2>/dev/null | wc -l) installed"
   log "graphify:    $(command -v graphify || echo MISSING)"
+  log "llm shim:    $(shim_up && echo "listening on $SHIM_PORT" || echo MISSING)"
+  log "cm settings: $([ -f "$CLAUDE_MEM_SETTINGS" ] && echo present || echo MISSING)"
+  log "dsh adapter: $([ -d "$PROFILE_DIR/node_modules/@claude-mem/dsh" ] && echo present || echo MISSING)"
   log "bun:         $([ -x "$BUN_BIN" ] && echo present || echo MISSING)"
   log "claude-mem:  $([ -x "$CLAUDE_MEM_BIN" ] && echo present || echo MISSING)"
   log "cm config:   $([ -d /root/.claude-mem ] && echo present || echo 'absent (run: npx claude-mem install)')"
