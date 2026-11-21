@@ -181,6 +181,38 @@ ensure_adapter_patch() {
   fi
 }
 
+# The browser-trust fence answers 403 to every authority it was not told about,
+# so a custom domain stays dead until its hostname reaches trustedHosts. And the
+# launch token is regenerated per process by design, so a long-lived cookie is
+# what keeps a browser logged in across restarts. Both live in the profile
+# patch; idempotent.
+ensure_web_auth_config() {
+  local patch="$PROFILE_DIR/cordis.patch.yml"
+  [ -f "$patch" ] || return 0
+  if grep -q 'trustedHosts' "$patch" 2>/dev/null && grep -q 'cookieMaxAgeDays' "$patch" 2>/dev/null; then
+    log "web auth config present (custom domain trusted, long-lived cookie)"
+    return 0
+  fi
+  if [ "$CHECK_ONLY" = 1 ]; then missing "web auth config absent from the profile patch"; return 1; fi
+  {
+    cat <<'PATCH'
+- id: connection
+  name: "@deepseek-ai/dsh-client-connection"
+  config:
+    trustedHosts:
+      - constructor.zottagroup.com
+PATCH
+    [ -n "${TRUSTED_HOST:-}" ] && printf '      - %s\n' "$TRUSTED_HOST"
+    cat <<'PATCH'
+- id: authentication-token
+  name: "@deepseek-ai/dsh-host-authentication-token"
+  config:
+    cookieMaxAgeDays: 3650
+PATCH
+  } >> "$patch"
+  log "web auth config added to the profile patch"
+}
+
 # --- bun ------------------------------------------------------------------------
 # claude-mem's worker runs on Bun. It lives under /root/.bun so it survives a
 # redeploy; this rebuilds it only when the volume is fresh.
@@ -295,6 +327,7 @@ ensure_claude_mem
 ensure_claude_mem_settings
 ensure_profile_adapter
 ensure_adapter_patch
+ensure_web_auth_config
 ensure_graphify
 ensure_playwright
 ensure_tools
@@ -322,5 +355,14 @@ fi
 
 # The app refuses 0.0.0.0, so bind the container's concrete IPv4.
 IP=$(hostname -i | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
+
+# Trusted authorities for the browser-trust fence. TRUSTED_HOST is the
+# platform-provided authority; EXTRA_TRUSTED_HOSTS carries custom domains,
+# space-separated, so a custom domain stops answering 403 without editing code.
+TRUSTED_ARGS=(--trusted-host "$TRUSTED_HOST")
+for host in ${EXTRA_TRUSTED_HOSTS:-constructor.zottagroup.com}; do
+  [ -n "$host" ] && TRUSTED_ARGS+=(--trusted-host "$host")
+done
+
 exec pnpm dsh web --no-open --host "$IP" --port 3080 \
-  --public-url "$PUBLIC_URL" --trusted-host "$TRUSTED_HOST"
+  --public-url "$PUBLIC_URL" "${TRUSTED_ARGS[@]}"
